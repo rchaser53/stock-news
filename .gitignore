@@ -1,0 +1,31 @@
+# 出力ディレクトリ
+output/
+
+# Go関連
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node/TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+
+diffs/*
+.env
+eval/__pycache__/
