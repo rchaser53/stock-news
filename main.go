@@ -1,13 +1,15 @@
 package main
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
-	"github.com/sashabaranov/go-openai"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,42 +39,112 @@ func loadConfig(filename string) (*Config, error) {
 	return &config, nil
 }
 
-// getStockNews ChatGPT APIを使用して株価ニュースを取得する
-func getStockNews(client *openai.Client, company Company) (string, error) {
+// 変更点1: リクエスト型をResponses API向けに
+type ResponsesRequest struct {
+	Model string      `json:"model"`
+	Input interface{} `json:"input"`
+	Tools []struct {
+		Type string `json:"type"`
+	} `json:"tools,omitempty"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+}
+
+type ResponsesMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ResponsesResponse struct {
+	Output []struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		// ツール呼び出しが入る場合もあるが、まずは本文だけ拾う
+	} `json:"output"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+func getStockNews(apiKey string, company Company) (string, error) {
 	prompt := fmt.Sprintf(
-		"%s（証券コード: %s）に関する最新の株価関連ニュースや重要な動向を3つ程度、簡潔に教えてください。",
-		company.Name,
-		company.Ticker,
+		`%s（証券コード: %s）について、直近30日以内のニュースや会社情報をWeb検索で調べ、
+新しい順で最大3件、以下の形式で出力してください。必ず記事URLを含めてください。
+
+1. **記事タイトル** (YYYY-MM-DD)
+   - 要約: [株価への影響を中心に簡潔に]
+   - 出典: [URL]
+
+見つからない場合は「直近30日で該当ニュースなし」と書き、代わりに事業概要を150字で要約。`,
+		company.Name, company.Ticker,
 	)
 
-	resp, err := client.CreateChatCompletion(
-		context.Background(),
-		openai.ChatCompletionRequest{
-			Model: openai.GPT4,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: "あなたは株式市場の専門家です。最新の株価関連ニュースを簡潔に提供してください。",
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: prompt,
-				},
-			},
-			MaxTokens:   500,
-			Temperature: 0.7,
+	reqBody := ResponsesRequest{
+		Model: "gpt-4o",
+		Input: []ResponsesMessage{
+			{Role: "user", Content: prompt},
 		},
-	)
+		Tools: []struct {
+			Type string `json:"type"`
+		}{
+			{Type: "web_search"},
+		},
+		MaxOutputTokens: 1200,
+	}
 
+	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("ChatGPT APIの呼び出しに失敗しました: %w", err)
+		return "", fmt.Errorf("JSON化に失敗: %w", err)
 	}
 
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("ChatGPTからの応答がありません")
+	// 変更点2: エンドポイントを /v1/responses に
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("リクエスト作成失敗: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("APIリクエスト失敗: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("APIエラー (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	var r ResponsesResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", fmt.Errorf("パース失敗: %w", err)
+	}
+	if r.Error != nil {
+		return "", fmt.Errorf("OpenAI APIエラー: %s", r.Error.Message)
+	}
+
+	// Output配列から最後の要素（テキスト出力）を取得
+	if len(r.Output) == 0 {
+		return "", fmt.Errorf("応答が空です")
+	}
+
+	// 最後の出力要素を取得（通常は最後にテキストが入る）
+	lastOutput := r.Output[len(r.Output)-1]
+	if len(lastOutput.Content) == 0 {
+		return "", fmt.Errorf("応答内容が空です")
+	}
+
+	// Type が "output_text" の要素を探す
+	for _, content := range lastOutput.Content {
+		if content.Type == "output_text" && content.Text != "" {
+			return content.Text, nil
+		}
+	}
+
+	return "", fmt.Errorf("テキスト応答が見つかりません")
 }
 
 func main() {
@@ -92,18 +164,15 @@ func main() {
 		log.Fatal("設定ファイルに会社が登録されていません")
 	}
 
-	// OpenAIクライアントを作成
-	client := openai.NewClient(apiKey)
-
 	// 各会社のニュースを取得して出力
-	fmt.Println("=== 株価関連ニュース ===")
+	fmt.Println("=== 株価関連情報 ===")
 	fmt.Println()
 
 	for i, company := range config.Companies {
 		fmt.Printf("[%d] %s (%s)\n", i+1, company.Name, company.Ticker)
 		fmt.Println(strings.Repeat("-", 60))
 
-		news, err := getStockNews(client, company)
+		news, err := getStockNews(apiKey, company)
 		if err != nil {
 			fmt.Printf("エラー: %v\n", err)
 		} else {
