@@ -1,0 +1,11 @@
+companies:
+  - name: "スポーツフィールド"
+    ticker: "7080"
+  - name: "グランディハウス"
+    ticker: "8999"
+  - name: "クオルテック"
+    ticker: "9165"
+  - name: "塩水港精糖"
+    ticker: "2112"
+  - name: "ディー・エヌ・エー"
+    ticker: "2432"
