@@ -17,6 +17,7 @@ import (
 type Company struct {
 	Name   string `yaml:"name"`
 	Ticker string `yaml:"ticker"`
+	IrURL  string `yaml:"ir_url"`
 }
 
 // Config 設定ファイルの構造体
@@ -69,16 +70,29 @@ type ResponsesResponse struct {
 }
 
 func getStockNews(apiKey string, company Company) (string, error) {
-	prompt := fmt.Sprintf(
-		`%s（証券コード: %s）について、直近30日以内のニュースや会社情報をWeb検索で調べ、
-新しい順で最大3件、以下の形式で出力してください。必ず記事URLを含めてください。
+	irURLInfo := ""
+	if company.IrURL != "" {
+		irURLInfo = fmt.Sprintf("\n\n**重要**: 必ず以下のIRサイトも確認してください:\n%s", company.IrURL)
+	}
 
+	prompt := fmt.Sprintf(
+		`%s（証券コード: %s）について、以下の手順で情報を収集してください:
+
+1. IRサイト（%s）から最新のIR情報（決算、開示資料、プレスリリース）を確認
+2. Web検索で直近30日以内の株価関連ニュースを調査
+
+## 出力形式
+### IRサイトからの最新情報
+- 日付と内容を箇条書き（最大3件）
+
+### Web検索からのニュース
 1. **記事タイトル** (YYYY-MM-DD)
-   - 要約: [株価への影響を中心に簡潔に]
+   - 要約: [株価への影響を中心に]
    - 出典: [URL]
 
-見つからない場合は「直近30日で該当ニュースなし」と書き、代わりに事業概要を150字で要約。`,
-		company.Name, company.Ticker,
+IRサイトに情報がない、またはアクセスできない場合はその旨を記載し、Web検索結果のみを表示。
+両方とも見つからない場合は事業概要を150字で要約。%s`,
+		company.Name, company.Ticker, company.IrURL, irURLInfo,
 	)
 
 	reqBody := ResponsesRequest{
@@ -91,7 +105,7 @@ func getStockNews(apiKey string, company Company) (string, error) {
 		}{
 			{Type: "web_search"},
 		},
-		MaxOutputTokens: 1200,
+		MaxOutputTokens: 1500,
 	}
 
 	jsonData, err := json.Marshal(reqBody)
