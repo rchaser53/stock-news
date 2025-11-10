@@ -14,3 +14,10 @@ companies:
   - name: "ディー・エヌ・エー"
     ticker: "2432"
     ir_url: "https://dena.com/jp/ir/"
+  - name: "Ｐｈｏｔｏｓｙｎｔｈ"
+    ticker: "4379"
+    ir_url: "https://photosynth.co.jp/ir"
+  - name: "ギフトホールディングス"
+    ticker: "9279"
+    ir_url: "https://www.gift-group.co.jp/ir"
+    
