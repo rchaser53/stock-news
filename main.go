@@ -90,8 +90,8 @@ func getStockNews(apiKey string, company Company) (string, error) {
    - 要約: [株価への影響を中心に]
    - 出典: [URL]
 
-IRサイトに情報がない、またはアクセスできない場合はその旨を記載し、Web検索結果のみを表示。
-両方とも見つからない場合は事業概要を150字で要約。%s`,
+IRサイトに情報がない、またはアクセスできない場合はその旨を記載。
+Web検索でもニュースが見つからない場合は「該当ニュースなし」と記載。%s`,
 		company.Name, company.Ticker, company.IrURL, irURLInfo,
 	)
 
