@@ -8,7 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -178,21 +179,43 @@ func main() {
 		log.Fatal("設定ファイルに会社が登録されていません")
 	}
 
+	// 出力ディレクトリを作成（output/YYYY-MM-DD）
+	now := time.Now()
+	dateStr := now.Format("2006-01-02")
+	outputDir := filepath.Join("output", dateStr)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Fatalf("出力ディレクトリの作成に失敗: %v", err)
+	}
+
 	// 各会社のニュースを取得して出力
 	fmt.Println("=== 株価関連情報 ===")
+	fmt.Printf("出力ディレクトリ: %s\n", outputDir)
 	fmt.Println()
 
 	for i, company := range config.Companies {
-		fmt.Printf("[%d] %s (%s)\n", i+1, company.Name, company.Ticker)
-		fmt.Println(strings.Repeat("-", 60))
+		fmt.Printf("[%d] %s (%s) を処理中...\n", i+1, company.Name, company.Ticker)
 
 		news, err := getStockNews(apiKey, company)
 		if err != nil {
-			fmt.Printf("エラー: %v\n", err)
-		} else {
-			fmt.Println(news)
+			fmt.Printf("  エラー: %v\n", err)
+			continue
 		}
 
-		fmt.Println()
+		// ファイル名を作成（会社名_証券コード.txt）
+		filename := fmt.Sprintf("%s_%s.txt", company.Name, company.Ticker)
+		filePath := filepath.Join(outputDir, filename)
+
+		// ファイルに書き込み
+		content := fmt.Sprintf("会社名: %s\n証券コード: %s\nIRサイト: %s\n取得日時: %s\n\n%s\n",
+			company.Name, company.Ticker, company.IrURL, now.Format("2006-01-02 15:04:05"), news)
+
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			fmt.Printf("  ファイル書き込みエラー: %v\n", err)
+			continue
+		}
+
+		fmt.Printf("  ✓ 完了: %s\n", filePath)
 	}
+
+	fmt.Println("\n=== 処理完了 ===")
 }
