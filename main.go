@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,10 +208,8 @@ func readAloudFiles(dirPath string) error {
 			continue
 		}
 
-		// macOSのsayコマンドで読み上げ
-		// -v Kyoko で日本語音声を使用
-		cmd := exec.Command("say", "-v", "Kyoko", string(content))
-		if err := cmd.Run(); err != nil {
+		// VOICEVOXで読み上げ（ずんだもん: speakerID=3）
+		if err := speakWithVoicevox(string(content), 3); err != nil {
 			fmt.Printf("  エラー: 音声読み上げに失敗 - %v\n", err)
 			continue
 		}
@@ -352,6 +351,88 @@ type DiffInfo struct {
 	NewContent  string
 }
 
+// VOICEVOX API クライアント
+const voicevoxBaseURL = "http://localhost:50021"
+
+// speakWithVoicevox VOICEVOXで音声合成して読み上げる
+func speakWithVoicevox(text string, speakerID int) error {
+	// 1. 音声合成用のクエリを作成
+	query, err := createAudioQuery(text, speakerID)
+	if err != nil {
+		return fmt.Errorf("音声クエリの作成に失敗: %w", err)
+	}
+
+	// 2. 音声を合成
+	audioData, err := synthesis(query, speakerID)
+	if err != nil {
+		return fmt.Errorf("音声合成に失敗: %w", err)
+	}
+
+	// 3. 音声データを再生
+	if err := playAudio(audioData); err != nil {
+		return fmt.Errorf("音声再生に失敗: %w", err)
+	}
+
+	return nil
+}
+
+// createAudioQuery 音声合成用のクエリを作成
+func createAudioQuery(text string, speakerID int) ([]byte, error) {
+	apiURL := fmt.Sprintf("%s/audio_query?text=%s&speaker=%d",
+		voicevoxBaseURL,
+		url.QueryEscape(text),
+		speakerID)
+
+	resp, err := http.Post(apiURL, "application/json", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("APIエラー (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// synthesis 音声合成を実行
+func synthesis(query []byte, speakerID int) ([]byte, error) {
+	apiURL := fmt.Sprintf("%s/synthesis?speaker=%d", voicevoxBaseURL, speakerID)
+	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(query))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("APIエラー (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// playAudio 音声データを再生（macOSの場合）
+func playAudio(audioData []byte) error {
+	// 一時ファイルに保存
+	tmpFile, err := os.CreateTemp("", "voicevox_*.wav")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(audioData); err != nil {
+		return err
+	}
+	tmpFile.Close()
+
+	// afplayコマンドで再生
+	cmd := exec.Command("afplay", tmpFile.Name())
+	return cmd.Run()
+}
+
 // compareAndReadDiffs 新旧ファイルを比較し、差分があれば要約して読み上げる
 func compareAndReadDiffs(apiKey, newDir, oldDir string) error {
 	fmt.Printf("\n=== 差分チェック ===\n")
@@ -448,10 +529,9 @@ func compareAndReadDiffs(apiKey, newDir, oldDir string) error {
 			}
 		}
 
-		// 要約を音声で読み上げ
+		// 要約を音声で読み上げ（ずんだもん: speakerID=3）
 		fmt.Printf("  読み上げ中...\n")
-		cmd := exec.Command("say", "-v", "Kyoko", summaryText)
-		if err := cmd.Run(); err != nil {
+		if err := speakWithVoicevox(summaryText, 3); err != nil {
 			fmt.Printf("  エラー: 音声読み上げに失敗 - %v\n", err)
 			continue
 		}

@@ -6,7 +6,8 @@
 
 - Go 1.21以上
 - OpenAI APIキー
-- macOS（音声読み上げ機能を使用する場合）
+- Docker（VOICEVOX Engine用）
+- macOS（音声ファイル再生用に`afplay`コマンドを使用）
 
 ## セットアップ
 
@@ -18,6 +19,20 @@ go mod download
 2. OpenAI APIキーを環境変数に設定:
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
+```
+
+3. VOICEVOX Engineを起動:
+```bash
+docker-compose up -d
+```
+
+VOICEVOX Engineが起動すると、`http://localhost:50021`でAPIが利用可能になります。
+
+初回起動時は、Dockerイメージのダウンロードに時間がかかる場合があります。
+
+**VOICEVOXの停止:**
+```bash
+docker-compose down
 ```
 
 ## 設定ファイル
@@ -197,8 +212,9 @@ go run main.go -auto-read
   - 情報取得: `gpt-4o` モデルを使用
   - 差分要約: `gpt-4o-mini` モデルを使用（コスト最適化）
 - APIのレート制限にご注意ください
-- 音声読み上げ機能はmacOSの`say`コマンドを使用しています（Windows/Linuxでは動作しません）
-- 音声読み上げは日本語音声「Kyoko」を使用します
+- 音声読み上げ機能は**VOICEVOX Engine**を使用し、**ずんだもん**（speakerID=3）の声で読み上げます
+- VOICEVOX Engineは事前に起動しておく必要があります（`docker-compose up -d`）
+- 音声ファイルの再生にはmacOSの`afplay`コマンドを使用します
 - 差分比較は、ファイルのニュース本文部分のみを対象とします（ヘッダー情報は除外）
 - `-auto-read`オプション使用時は、直近の最新ディレクトリと比較します
 - 差分要約は200文字以内で、株価に影響する重要な情報を優先します
@@ -218,10 +234,31 @@ go run main.go -auto-read
 
 ### 毎日の定期チェック
 ```bash
+# VOICEVOX Engineを起動
+docker-compose up -d
+
 # cronやタスクスケジューラで定期実行
 go run main.go -auto-read
 ```
-毎日実行すれば、前日からの変更点のみを音声で確認できます。
+毎日実行すれば、前日からの変更点のみをずんだもんの声で確認できます。
 
 ### 過去データとの比較
 新規取得したデータは日付ごとに保存されるため、過去の情報と比較できます。
+
+## VOICEVOX について
+
+このプログラムは[VOICEVOX Engine](https://github.com/VOICEVOX/voicevox_engine)を使用して、ずんだもん（東北ずん子）の声で音声読み上げを行います。
+
+- **使用音声:** ずんだもん（speakerID=3）
+- **Docker Image:** `voicevox/voicevox_engine:cpu-latest`
+- **API Endpoint:** `http://localhost:50021`
+
+他のキャラクターを使用したい場合は、[main.go](main.go)の`speakWithVoicevox`関数呼び出し部分で`speakerID`を変更してください。
+
+**主要なspeakerID一覧:**
+- 3: ずんだもん（ノーマル）
+- 1: 四国めたん（ノーマル）
+- 8: 春日部つむぎ（ノーマル）
+- 10: 雨晴はう（ノーマル）
+
+詳細は[VOICEVOXの公式ドキュメント](http://localhost:50021/docs)を参照してください（VOICEVOX Engine起動中にアクセス可能）。
