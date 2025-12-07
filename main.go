@@ -505,6 +505,49 @@ func compareAndReadDiffs(apiKey, newDir, oldDir string) error {
 		return nil
 	}
 
+	// 差分がある場合は、読み上げ前にファイルに保存
+	fmt.Printf("\n=== 差分情報をファイルに保存 ===\n")
+
+	// diffsディレクトリを作成
+	diffDir := "diffs"
+	if err := os.MkdirAll(diffDir, 0755); err != nil {
+		fmt.Printf("警告: diffsディレクトリの作成に失敗 - %v\n", err)
+	}
+
+	// タイムスタンプ付きのファイル名を生成
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	diffOutputPath := filepath.Join(diffDir, fmt.Sprintf("diff_%s.txt", timestamp))
+
+	var diffOutput strings.Builder
+	diffOutput.WriteString(fmt.Sprintf("差分検出日時: %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	diffOutput.WriteString(fmt.Sprintf("比較元: %s\n", oldDir))
+	diffOutput.WriteString(fmt.Sprintf("比較先: %s\n", newDir))
+	diffOutput.WriteString(fmt.Sprintf("差分ファイル数: %d\n\n", len(diffs)))
+	diffOutput.WriteString("=== 差分詳細 ===\n\n")
+
+	for i, diff := range diffs {
+		diffOutput.WriteString(fmt.Sprintf("[%d] %s\n", i+1, diff.FileName))
+		diffOutput.WriteString(fmt.Sprintf("会社名: %s\n", diff.CompanyName))
+		if diff.OldContent == "" {
+			diffOutput.WriteString("状態: 新規ファイル\n\n")
+			diffOutput.WriteString("内容:\n")
+			diffOutput.WriteString(diff.NewContent)
+		} else {
+			diffOutput.WriteString("状態: 更新\n\n")
+			diffOutput.WriteString("【旧版】\n")
+			diffOutput.WriteString(diff.OldContent)
+			diffOutput.WriteString("\n\n【新版】\n")
+			diffOutput.WriteString(diff.NewContent)
+		}
+		diffOutput.WriteString("\n\n" + strings.Repeat("=", 60) + "\n\n")
+	}
+
+	if err := os.WriteFile(diffOutputPath, []byte(diffOutput.String()), 0644); err != nil {
+		fmt.Printf("警告: 差分ファイルの保存に失敗 - %v\n", err)
+	} else {
+		fmt.Printf("✓ 差分情報を保存しました: %s\n", diffOutputPath)
+	}
+
 	fmt.Printf("\n=== 差分を要約して読み上げます（%d件） ===\n\n", len(diffs))
 
 	for i, diff := range diffs {
