@@ -1,11 +1,11 @@
 # 株価ニュース取得プログラム
 
-このプログラムは、設定ファイルに記載された会社の株価に関連する最新ニュースをChatGPT APIを使用して取得し、テキストファイルとして保存します。また、保存したファイルの内容を音声で読み上げる機能も搭載しています。
+このプログラムは、設定ファイルに記載された会社の株価に関連する最新ニュースをGemini APIを使用して取得し、テキストファイルとして保存します。また、保存したファイルの内容を音声で読み上げる機能も搭載しています。
 
 ## 必要な環境
 
 - Go 1.21以上
-- OpenAI APIキー
+- Gemini APIキー
 - Docker（VOICEVOX Engine用）
 - macOS（音声ファイル再生用に`afplay`コマンドを使用）
 
@@ -16,9 +16,23 @@
 go mod download
 ```
 
-2. OpenAI APIキーを環境変数に設定:
+2. Gemini APIキーを環境変数に設定:
 ```bash
-export OPENAI_API_KEY="your-api-key-here"
+export GEMINI_API_KEY="your-api-key-here"
+```
+
+任意で以下も指定できます:
+
+```bash
+# ニュース取得に使うモデル（デフォルト: gemini-1.5-flash）
+export GEMINI_MODEL_NEWS="gemini-1.5-flash"
+
+# 差分要約に使うモデル（デフォルト: gemini-1.5-flash）
+export GEMINI_MODEL_SUMMARY="gemini-1.5-flash"
+
+# ニュース取得時にgoogle_searchツールを使う（デフォルト: true）
+# 使えない環境では自動でツール無しにフォールバックします
+export GEMINI_ENABLE_GOOGLE_SEARCH="true"
 ```
 
 3. VOICEVOX Engineを起動:
@@ -208,9 +222,8 @@ go run main.go -auto-read
 
 ## 注意事項
 
-- OpenAI APIの利用には料金が発生します
-  - 情報取得: `gpt-4o` モデルを使用
-  - 差分要約: `gpt-4o-mini` モデルを使用（コスト最適化）
+- Gemini APIの利用には料金が発生します
+  - 情報取得/差分要約: デフォルトでは `gemini-1.5-flash` を使用します（環境変数で変更可能）
 - APIのレート制限にご注意ください
 - 音声読み上げ機能は**VOICEVOX Engine**を使用し、**ずんだもん**（speakerID=3）の声で読み上げます
 - VOICEVOX Engineは事前に起動しておく必要があります（`docker-compose up -d`）
