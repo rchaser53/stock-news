@@ -102,16 +102,51 @@ type GeminiListModelsResponse struct {
 	} `json:"error,omitempty"`
 }
 
+var lastGeminiAPIVersionUsed string
+
+func recordGeminiAPIVersionUsed(apiVersion string) {
+	lastGeminiAPIVersionUsed = apiVersion
+}
+
+func getLastGeminiAPIVersionUsed() string {
+	return lastGeminiAPIVersionUsed
+}
+
 func geminiAPIVersionFromEnv() string {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("GEMINI_API_VERSION")))
-	// 2025時点では v1 をデフォルトに（v1beta でモデルが見つからないケースがある）
+	// ユーザー指定が無い場合は v3 を優先
 	if v == "" {
-		return "v1"
+		return "v3"
 	}
-	if v != "v1" && v != "v1beta" {
-		return "v1"
+	if v == "3" {
+		return "v3"
+	}
+	if v != "v1" && v != "v1beta" && v != "v3" {
+		return "v3"
 	}
 	return v
+}
+
+func effectiveGeminiAPIVersion(requested string) string {
+	// 2025-12 時点で Generative Language API (generativelanguage.googleapis.com) のRESTは v1/v1beta が主。
+	// ユーザーが "v3" を指定した場合でも、実際には動作するバージョンにマップして動かす。
+	if requested == "v3" {
+		return "v1beta"
+	}
+	return requested
+}
+
+func isAPIVersionNotSupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// 代表的な失敗パターンを雑に拾う（404/unknown endpoint など）
+	return strings.Contains(msg, "404") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "unknown") ||
+		strings.Contains(msg, "unimplemented") ||
+		strings.Contains(msg, "invalid argument") && strings.Contains(msg, "version")
 }
 
 func normalizeGeminiModelName(model string) string {
@@ -130,6 +165,7 @@ func containsString(list []string, needle string) bool {
 }
 
 func listGeminiModels(apiKey, apiVersion string) ([]string, error) {
+	apiVersion = effectiveGeminiAPIVersion(apiVersion)
 	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/%s/models?key=%s", apiVersion, url.QueryEscape(apiKey))
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
@@ -142,10 +178,18 @@ func listGeminiModels(apiKey, apiVersion string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("API応答の読み込み失敗 (status %d): %w", resp.StatusCode, readErr)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("Gemini ListModels応答が空です (status %d)", resp.StatusCode)
+	}
+
 	var r GeminiListModelsResponse
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("パース失敗: %w", err)
+		// JSON以外（HTMLなど）もあり得るので、状況が分かるように status と body を出す
+		return nil, fmt.Errorf("Gemini ListModels JSONパース失敗 (status %d, body=%q): %w", resp.StatusCode, string(body), err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		if r.Error != nil {
@@ -230,6 +274,16 @@ func callGeminiGenerateContent(apiKey, model, prompt string, maxOutputTokens int
 		return text, nil
 	}
 
+	// APIバージョン未対応の環境向けフォールバック
+	if isAPIVersionNotSupportedError(err) {
+		for _, v := range []string{"v1", "v1beta"} {
+			fallbackText, fallbackErr := callGeminiGenerateContentOnceWithVersion(v, apiKey, model, prompt, maxOutputTokens, enableGoogleSearch)
+			if fallbackErr == nil {
+				return fallbackText, nil
+			}
+		}
+	}
+
 	// モデル名の揺れ対策: `gemini-1.5-flash` が無い環境では `-latest` が提供されている場合がある
 	if isModelNotFoundError(err) {
 		if !strings.HasSuffix(model, "-latest") {
@@ -244,10 +298,8 @@ func callGeminiGenerateContent(apiKey, model, prompt string, maxOutputTokens int
 		apiVersion := geminiAPIVersionFromEnv()
 		models, listErr := listGeminiModels(apiKey, apiVersion)
 		if listErr != nil {
-			// v1 でダメなら v1beta も試す
-			if apiVersion == "v1" {
-				models, _ = listGeminiModels(apiKey, "v1beta")
-			}
+			// v3/v1 でダメなら v1beta も試す
+			models, _ = listGeminiModels(apiKey, "v1beta")
 		}
 		chosen := pickPreferredGeminiModel(models)
 		if chosen != "" && chosen != model {
@@ -263,6 +315,11 @@ func callGeminiGenerateContent(apiKey, model, prompt string, maxOutputTokens int
 
 func callGeminiGenerateContentOnce(apiKey, model, prompt string, maxOutputTokens int, enableGoogleSearch bool) (string, error) {
 	apiVersion := geminiAPIVersionFromEnv()
+	return callGeminiGenerateContentOnceWithVersion(apiVersion, apiKey, model, prompt, maxOutputTokens, enableGoogleSearch)
+}
+
+func callGeminiGenerateContentOnceWithVersion(apiVersion, apiKey, model, prompt string, maxOutputTokens int, enableGoogleSearch bool) (string, error) {
+	apiVersion = effectiveGeminiAPIVersion(apiVersion)
 
 	reqBody := GeminiGenerateContentRequest{
 		Contents: []GeminiContent{
@@ -273,8 +330,8 @@ func callGeminiGenerateContentOnce(apiKey, model, prompt string, maxOutputTokens
 		},
 		GenerationConfig: &GeminiGenerationConfig{MaxOutputTokens: maxOutputTokens},
 	}
-	// tools は v1 では拒否されることがあるため、v1beta のときだけ付与
-	if enableGoogleSearch && apiVersion == "v1beta" {
+	// tools は v1 では拒否されることがあるため、v1 以外のときだけ付与
+	if enableGoogleSearch && apiVersion != "v1" {
 		reqBody.Tools = []GeminiTool{{GoogleSearch: map[string]any{}}}
 	}
 
@@ -296,10 +353,18 @@ func callGeminiGenerateContentOnce(apiKey, model, prompt string, maxOutputTokens
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return "", fmt.Errorf("API応答の読み込み失敗 (status %d): %w", resp.StatusCode, readErr)
+	}
+	if len(body) == 0 {
+		return "", fmt.Errorf("Gemini API応答が空です (status %d)", resp.StatusCode)
+	}
+
 	var r GeminiGenerateContentResponse
 	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("パース失敗: %w", err)
+		// JSON以外（HTMLなど）もあり得るので、状況が分かるように status と body を出す
+		return "", fmt.Errorf("Gemini generateContent JSONパース失敗 (status %d, body=%q): %w", resp.StatusCode, string(body), err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// bodyにerrorが含まれている場合はそちらを優先
@@ -328,6 +393,9 @@ func callGeminiGenerateContentOnce(apiKey, model, prompt string, maxOutputTokens
 	if text == "" {
 		return "", fmt.Errorf("テキスト応答が見つかりません")
 	}
+
+	// 最終的に成功したバージョンを記録（デバッグ用）
+	recordGeminiAPIVersionUsed(apiVersion)
 	return text, nil
 }
 
@@ -767,6 +835,10 @@ func main() {
 		log.Fatal("環境変数 GEMINI_API_KEY が設定されていません")
 	}
 
+	requestedVersion := geminiAPIVersionFromEnv()
+	effectiveVersion := effectiveGeminiAPIVersion(requestedVersion)
+	fmt.Printf("Gemini API version: requested=%s, effective=%s\n\n", requestedVersion, effectiveVersion)
+
 	// 設定ファイルを読み込む
 	config, err := loadConfig("config.yaml")
 	if err != nil {
@@ -816,6 +888,9 @@ func main() {
 	}
 
 	fmt.Println("\n=== 処理完了 ===")
+	if v := getLastGeminiAPIVersionUsed(); v != "" {
+		fmt.Printf("Gemini API version used (last success): %s\n", v)
+	}
 
 	// 自動読み上げモードの場合、差分をチェックして読み上げ
 	if *autoRead {
