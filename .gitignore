@@ -20,3 +20,5 @@ go.work
 *.swp
 *.swo
 *~
+
+diffs/*
