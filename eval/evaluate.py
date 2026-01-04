@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 try:
     import pandas as pd
@@ -180,6 +180,104 @@ def _to_ragas_frame(rows: List[Dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def _truncate(text: str, max_len: int) -> str:
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 1)] + "…"
+
+
+def _write_jsonl(path: str, rows: Sequence[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def _write_markdown_report(
+    path: str,
+    *,
+    task: Optional[str],
+    provider: str,
+    llm_model: Optional[str],
+    embedding_model: Optional[str],
+    summary: Dict[str, float],
+    rows: Sequence[Dict[str, Any]],
+    preview_chars: int,
+) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    lines: List[str] = []
+    lines.append("# ragas 評価レポート")
+    lines.append("")
+    lines.append(f"- task: {task or 'ALL'}")
+    lines.append(f"- provider: {provider}")
+    if llm_model:
+        lines.append(f"- llm_model: {llm_model}")
+    if embedding_model:
+        lines.append(f"- embedding_model: {embedding_model}")
+    lines.append(f"- samples: {len(rows)}")
+    lines.append("")
+
+    lines.append("## 平均スコア")
+    if summary:
+        for k, v in summary.items():
+            if v == v:  # not NaN
+                lines.append(f"- {k}: {v:.4f}")
+            else:
+                lines.append(f"- {k}: NaN")
+    else:
+        lines.append("- (no numeric scores)")
+    lines.append("")
+
+    lines.append("## サンプル")
+    for i, r in enumerate(rows, start=1):
+        user_input = str(r.get("user_input") or "")
+        response = str(r.get("response") or "")
+        retrieved_contexts = r.get("retrieved_contexts") or []
+
+        metric_parts = []
+        for k, v in r.items():
+            if k in ("user_input", "response", "retrieved_contexts"):
+                continue
+            if isinstance(v, (int, float)):
+                metric_parts.append(f"{k}={v:.4f}" if v == v else f"{k}=NaN")
+        metric_str = (" | " + ", ".join(metric_parts)) if metric_parts else ""
+
+        lines.append(f"### {i}. {_truncate(user_input, 80)}{metric_str}")
+        lines.append("")
+        lines.append("**Question**")
+        lines.append("")
+        lines.append(user_input)
+        lines.append("")
+        lines.append("**Answer (preview)**")
+        lines.append("")
+        lines.append(_truncate(response, preview_chars))
+        lines.append("")
+        lines.append("<details><summary>全文 / contexts を表示</summary>")
+        lines.append("")
+        lines.append("**retrieved_contexts**")
+        lines.append("")
+        if isinstance(retrieved_contexts, list) and retrieved_contexts:
+            for c in retrieved_contexts:
+                lines.append("- " + _truncate(str(c), 500))
+        else:
+            lines.append("- (empty)")
+        lines.append("")
+        lines.append("**response**")
+        lines.append("")
+        lines.append("```text")
+        lines.append(response)
+        lines.append("```")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate stock-news outputs using ragas")
     parser.add_argument("--input", required=True, help="JSONL file, glob, or directory (e.g. eval_runs)")
@@ -187,7 +285,23 @@ def main() -> None:
     parser.add_argument("--provider", default=None, choices=["openai", "google"], help="LLM/embeddings provider")
     parser.add_argument("--llm-model", default=None, help="Override judge LLM model")
     parser.add_argument("--embedding-model", default=None, help="Override embedding model")
-    parser.add_argument("--out", default=None, help="Output CSV path (default: eval_reports/ragas_<timestamp>.csv)")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output path. If omitted, writes Markdown to eval_reports/ragas_<timestamp>.md",
+    )
+    parser.add_argument(
+        "--out-format",
+        default="md",
+        choices=["md", "jsonl", "csv"],
+        help="Output format (default: md)",
+    )
+    parser.add_argument(
+        "--preview-chars",
+        type=int,
+        default=280,
+        help="Preview length for markdown output (default: 280)",
+    )
     parser.add_argument(
         "--env-file",
         default=None,
@@ -257,18 +371,42 @@ def main() -> None:
         raise_exceptions=False,
     )
 
+    scores_df = result.to_pandas()
+
+    numeric = scores_df.select_dtypes(include=["number"])
+    summary = {k: float(v) for k, v in numeric.mean(numeric_only=True, skipna=True).to_dict().items()}
+
     out_path = args.out
     if not out_path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join("eval_reports", f"ragas_{ts}.csv")
+        out_path = os.path.join("eval_reports", f"ragas_{ts}.{args.out_format}")
 
-    scores_df = result.to_pandas()
-    scores_df.to_csv(out_path, index=False)
+    fmt = args.out_format
+    if args.out and isinstance(args.out, str) and "." in args.out:
+        ext = args.out.rsplit(".", 1)[-1].lower()
+        if ext in ("md", "jsonl", "csv"):
+            fmt = ext
 
-    # ragas 0.4+ returns an EvaluationResult object (not dict-like).
-    # We compute mean scores from the per-row result dataframe.
-    numeric = scores_df.select_dtypes(include=["number"])
-    summary = {k: float(v) for k, v in numeric.mean(numeric_only=True, skipna=True).to_dict().items()}
+    if fmt == "csv":
+        scores_df.to_csv(out_path, index=False)
+    else:
+        rows_out: List[Dict[str, Any]] = scores_df.to_dict(orient="records")
+        if fmt == "jsonl":
+            _write_jsonl(out_path, rows_out)
+        elif fmt == "md":
+            _write_markdown_report(
+                out_path,
+                task=args.task,
+                provider=provider,
+                llm_model=args.llm_model,
+                embedding_model=args.embedding_model,
+                summary=summary,
+                rows=rows_out,
+                preview_chars=args.preview_chars,
+            )
+        else:
+            raise SystemExit(f"Unsupported out format: {fmt}")
+
     print("Saved:", out_path)
     print("Summary:")
     for k, v in summary.items():
