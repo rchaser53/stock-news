@@ -260,16 +260,19 @@ pip install -r eval/requirements.txt
 - OpenAIを使う: `OPENAI_API_KEY`
 - Google Geminiを使う: `GOOGLE_API_KEY`（または既存の `GEMINI_API_KEY`）
 
+`eval/evaluate.py` はリポジトリ直下の `.env` を自動で読み込みます（実行ディレクトリに依存しません）。
+別の dotenv を使いたい場合は `--env-file` を指定してください。
+
 実行例（差分要約のみ評価）:
 
 ```bash
-python eval/evaluate.py --input eval_runs --task diff_summary
+.venv/bin/python eval/evaluate.py --input eval_runs --task diff_summary
 ```
 
 実行例（ニュース取得のみ評価）:
 
 ```bash
-python eval/evaluate.py --input eval_runs --task news_report
+.venv/bin/python eval/evaluate.py --input eval_runs --task news_report
 ```
 
 結果は `eval_reports/ragas_YYYYMMDD_HHMMSS.csv` に保存され、平均スコアも標準出力に表示されます。
