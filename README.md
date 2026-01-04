@@ -2,9 +2,6 @@
 
 このプログラムは、設定ファイルに記載された会社の株価に関連する最新ニュースをGemini APIを使用して取得し、テキストファイルとして保存します。また、保存したファイルの内容を音声で読み上げる機能も搭載しています。
 
-このリポジトリには **Go版（既存）** と **TypeScript(Node.js)版（推奨）** の2つの実装があります。
-TypeScript版は https://github.com/rchaser53/rag-playground の方針（`.env`/Node実行/リトライ実装など）に合わせています。
-
 ## TypeScript(Node.js)版（推奨）
 
 ### 必要な環境
@@ -49,59 +46,6 @@ npm run dev -- -auto-read
 npm run dev -- -read -dir output/2025-12-06
 ```
 
-## 必要な環境
-
-- Go 1.21以上
-- Gemini APIキー
-- Docker（VOICEVOX Engine用）
-- macOS（音声ファイル再生用に`afplay`コマンドを使用）
-
-## セットアップ
-
-1. 依存関係をインストール:
-```bash
-go mod download
-```
-
-2. Gemini APIキーを環境変数に設定:
-```bash
-export GEMINI_API_KEY="your-api-key-here"
-```
-
-任意で以下も指定できます:
-
-```bash
-# 共通のデフォルトモデル（デフォルト: gemini-3-pro-preview）
-# rag-playground と同じ env 名に合わせています。
-export GEMINI_CHAT_MODEL="gemini-3-pro-preview"
-# 互換: GEMINI_MODEL でも指定できます
-# export GEMINI_MODEL="gemini-3-pro-preview"
-
-# ニュース取得に使うモデル（未指定時は GEMINI_CHAT_MODEL / GEMINI_MODEL を使用）
-export GEMINI_MODEL_NEWS="gemini-3-pro-preview"
-
-# 差分要約に使うモデル（未指定時は GEMINI_CHAT_MODEL / GEMINI_MODEL を使用）
-export GEMINI_MODEL_SUMMARY="gemini-3-pro-preview"
-
-# ニュース取得時にgoogle_searchツールを使う（デフォルト: true）
-# 使えない環境では自動でツール無しにフォールバックします
-export GEMINI_ENABLE_GOOGLE_SEARCH="true"
-```
-
-3. VOICEVOX Engineを起動:
-```bash
-docker-compose up -d
-```
-
-VOICEVOX Engineが起動すると、`http://localhost:50021`でAPIが利用可能になります。
-
-初回起動時は、Dockerイメージのダウンロードに時間がかかる場合があります。
-
-**VOICEVOXの停止:**
-```bash
-docker-compose down
-```
-
 ## 設定ファイル
 
 `config.yaml` に監視したい会社のリストを記載します:
@@ -122,14 +66,7 @@ companies:
 ### 1. ニュース取得モード（デフォルト）
 
 ```bash
-go run main.go
-```
-
-または、ビルドして実行:
-
-```bash
-go build -o stock-news
-./stock-news
+npm run dev
 ```
 
 実行すると、`output/YYYY-MM-DD/` ディレクトリに各会社のニュースがテキストファイルとして保存されます。
@@ -139,13 +76,7 @@ go build -o stock-news
 ニュースを取得した後、直前の最新情報と自動で比較し、変更があったファイルのみを**要約して**音声で読み上げます：
 
 ```bash
-go run main.go -auto-read
-```
-
-または：
-
-```bash
-./stock-news -auto-read
+npm run dev -- -auto-read
 ```
 
 このモードでは：
@@ -195,13 +126,7 @@ go run main.go -auto-read
 指定したディレクトリ内の全ての `.txt` ファイルを音声で読み上げます：
 
 ```bash
-go run main.go -read -dir output/2025-12-06
-```
-
-または：
-
-```bash
-./stock-news -read -dir output/2025-12-06
+npm run dev -- -read -dir output/2025-12-06
 ```
 
 **オプション:**
@@ -212,13 +137,13 @@ go run main.go -read -dir output/2025-12-06
 **使用例:**
 ```bash
 # 今日のニュースを読み上げ
-go run main.go -read -dir output/2025-12-06
+npm run dev -- -read -dir output/2025-12-06
 
 # 過去のニュースを読み上げ
-go run main.go -read -dir output/2025-11-15
+npm run dev -- -read -dir output/2025-11-15
 
 # 情報取得後、自動で差分のみ読み上げ（最も効率的）
-go run main.go -auto-read
+npm run dev -- -auto-read
 ```
 
 ## 出力例
@@ -276,7 +201,7 @@ go run main.go -auto-read
 ## 注意事項
 
 - Gemini APIの利用には料金が発生します
-  - 情報取得/差分要約: デフォルトでは `gemini-1.5-flash` を使用します（環境変数で変更可能）
+  - 情報取得/差分要約: デフォルトでは `gemini-3-pro-preview` を使用します（環境変数で変更可能）
 - APIのレート制限にご注意ください
 - 音声読み上げ機能は**VOICEVOX Engine**を使用し、**ずんだもん**（speakerID=3）の声で読み上げます
 - VOICEVOX Engineは事前に起動しておく必要があります（`docker-compose up -d`）
@@ -287,7 +212,7 @@ go run main.go -auto-read
 
 ## ragas による自動評価（LLM出力のスコアリング）
 
-このプロジェクトは Go でニュース取得/差分要約を行いますが、出力品質の評価には Python ライブラリの `ragas` を利用できます。
+このプロジェクトは TypeScript(Node.js) でニュース取得/差分要約を行い、出力品質の評価には Python ライブラリの `ragas` を利用できます。
 
 ### 何が評価できるか
 
@@ -301,13 +226,13 @@ go run main.go -auto-read
 通常実行でも `news_report` を `eval_runs/*.jsonl` に追記します。
 
 ```bash
-go run main.go
+npm run dev
 ```
 
 差分要約 (`diff_summary`) も評価したい場合は `-auto-read` を使ってください（LLM要約が成功したものだけが記録されます）。
 
 ```bash
-go run main.go -auto-read
+npm run dev -- -auto-read
 ```
 
 出力先は環境変数で変更できます:
@@ -368,7 +293,7 @@ python eval/evaluate.py --input eval_runs --task news_report
 docker-compose up -d
 
 # cronやタスクスケジューラで定期実行
-go run main.go -auto-read
+npm run dev -- -auto-read
 ```
 毎日実行すれば、前日からの変更点のみをずんだもんの声で確認できます。
 
@@ -384,6 +309,7 @@ go run main.go -auto-read
 - **API Endpoint:** `http://localhost:50021`
 
 他のキャラクターを使用したい場合は、[main.go](main.go)の`speakWithVoicevox`関数呼び出し部分で`speakerID`を変更してください。
+他のキャラクターを使用したい場合は、[src/voicevox.ts](src/voicevox.ts) の `speakWithVoicevox(text, speakerId)` 呼び出し側の `speakerId` を変更してください。
 
 **主要なspeakerID一覧:**
 - 3: ずんだもん（ノーマル）
