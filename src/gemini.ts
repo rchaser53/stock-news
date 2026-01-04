@@ -13,12 +13,6 @@ type GeminiGenerateContentResponse = {
   error?: { code?: number; message?: string; status?: string };
 };
 
-type GeminiListModelsResponse = {
-  models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
-  nextPageToken?: string;
-  error?: { code?: number; message?: string; status?: string };
-};
-
 let lastGeminiApiVersionUsed = '';
 
 export function getLastGeminiApiVersionUsed(): string {
@@ -29,48 +23,23 @@ function recordGeminiApiVersionUsed(v: string) {
   lastGeminiApiVersionUsed = v;
 }
 
+function normalizeGeminiApiVersion(raw: string): 'v1' | 'v1beta' {
+  const v = (raw ?? '').trim().toLowerCase();
+  // 実際のAPIエンドポイントは v1 / v1beta を使用する。
+  // 過去設定との互換のため v3/3 は v1beta として扱う。
+  if (!v) return 'v1beta';
+  if (v === 'v1' || v === 'v1beta') return v;
+  if (v === 'v3' || v === '3') return 'v1beta';
+  return 'v1beta';
+}
+
 export function geminiApiVersionFromEnv(): string {
-  const v = (process.env.GEMINI_API_VERSION ?? '').trim().toLowerCase();
-  if (!v) return 'v3';
-  if (v === '3') return 'v3';
-  if (v !== 'v1' && v !== 'v1beta' && v !== 'v3') return 'v3';
-  return v;
-}
-
-function effectiveGeminiApiVersion(requested: string): string {
-  const v = (requested ?? '').trim().toLowerCase() || 'v3';
-  return v === 'v3' ? 'v1beta' : v;
-}
-
-function geminiApiVersionFallbackOrder(requested: string): string[] {
-  const effective = effectiveGeminiApiVersion(requested);
-  const order: string[] = [effective];
-  const add = (v: string) => {
-    if (!order.includes(v)) order.push(v);
-  };
-  add('v1beta');
-  add('v1');
-  return order;
+  return normalizeGeminiApiVersion(process.env.GEMINI_API_VERSION ?? '');
 }
 
 function normalizeModelName(model: string): string {
   const m = (model ?? '').trim();
   return m.startsWith('models/') ? m.slice('models/'.length) : m;
-}
-
-function isApiVersionNotSupportedError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  return msg.includes('404') || msg.includes('not found') || msg.includes('unknown') || msg.includes('unimplemented');
-}
-
-function isModelNotFoundError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  return msg.includes('not found') || msg.includes('not_supported') || msg.includes('not supported') || msg.includes('model_not_found');
-}
-
-function isGeminiEmptyResponseError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  return msg.includes('応答が空') || msg.includes('テキスト応答が見つかりません') || msg.includes('empty response');
 }
 
 function truncateForError(s: string, max: number): string {
@@ -87,50 +56,6 @@ export function geminiDebugEnabled(): boolean {
   return envBool('GEMINI_DEBUG', false);
 }
 
-async function listGeminiModels(apiKey: string, apiVersion: string): Promise<string[]> {
-  if (!apiKey.trim()) throw new Error('GEMINI_API_KEY が空です');
-
-  let lastErr: unknown;
-  for (const v of geminiApiVersionFallbackOrder(apiVersion)) {
-    const endpoint = `https://generativelanguage.googleapis.com/${v}/models?key=${encodeURIComponent(apiKey)}`;
-    try {
-      const res = await serialize(() => withRetry(() => fetch(endpoint, { method: 'GET' })));
-      const body = await res.text();
-      if (!body) throw new Error(`Gemini ListModels応答が空です (status ${res.status})`);
-
-      const parsed = JSON.parse(body) as GeminiListModelsResponse;
-      if (!res.ok) {
-        const msg = parsed?.error?.message ?? body;
-        throw Object.assign(new Error(`Gemini ListModelsエラー (status ${res.status}): ${msg}`), { status: res.status });
-      }
-      if (parsed.error?.message) throw new Error(`Gemini ListModelsエラー: ${parsed.error.message}`);
-
-      const models = (parsed.models ?? [])
-        .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
-        .map((m) => normalizeModelName(m.name ?? ''))
-        .filter((m) => m);
-
-      return models;
-    } catch (err) {
-      lastErr = err;
-      if (isApiVersionNotSupportedError(err)) continue;
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('Gemini ListModelsに失敗しました');
-}
-
-function pickPreferredGeminiModel(models: string[]): string {
-  for (const m of models) if (m.includes('flash')) return m;
-  for (const m of models) if (m.includes('pro')) return m;
-  return models[0] ?? '';
-}
-
-function pickPreferredGeminiModelExcluding(models: string[], exclude: string): string {
-  const normalizedExclude = normalizeModelName(exclude);
-  const filtered = models.filter((m) => normalizeModelName(m) !== normalizedExclude);
-  return pickPreferredGeminiModel(filtered);
-}
-
 async function callGenerateContentOnceWithVersion(
   apiVersion: string,
   apiKey: string,
@@ -139,7 +64,7 @@ async function callGenerateContentOnceWithVersion(
   maxOutputTokens: number,
   enableGoogleSearch: boolean
 ): Promise<string> {
-  const version = effectiveGeminiApiVersion(apiVersion);
+  const version = normalizeGeminiApiVersion(apiVersion);
   const normalizedModel = normalizeModelName(model);
   if (!apiKey.trim()) throw new Error('GEMINI_API_KEY が空です');
   if (!normalizedModel) throw new Error('Gemini model が空です');
@@ -226,78 +151,8 @@ export async function callGeminiGenerateContent(
 ): Promise<string> {
   const normalizedModel = normalizeModelName(model);
 
-  try {
-    return await callGenerateContentOnce(apiKey, normalizedModel, prompt, maxOutputTokens, enableGoogleSearch);
-  } catch (err) {
-    // APIバージョン未対応フォールバック
-    if (isApiVersionNotSupportedError(err)) {
-      const order = geminiApiVersionFallbackOrder(geminiApiVersionFromEnv()).slice(1);
-      for (const v of order) {
-        try {
-          return await callGenerateContentOnceWithVersion(v, apiKey, normalizedModel, prompt, maxOutputTokens, enableGoogleSearch);
-        } catch {
-          // continue
-        }
-      }
-    }
-
-    // googleSearch tool が使えない環境向け: tools無しで再試行（ただし呼び出し側でやることもある）
-
-    // モデル not found フォールバック
-    if (isModelNotFoundError(err)) {
-      if (!normalizedModel.endsWith('-latest')) {
-        try {
-          return await callGenerateContentOnce(apiKey, `${normalizedModel}-latest`, prompt, maxOutputTokens, enableGoogleSearch);
-        } catch {
-          // continue
-        }
-      }
-
-      try {
-        const models = await listGeminiModels(apiKey, geminiApiVersionFromEnv());
-        const chosen = pickPreferredGeminiModel(models);
-        if (chosen && chosen !== normalizedModel) {
-          return await callGenerateContentOnce(apiKey, chosen, prompt, maxOutputTokens, enableGoogleSearch);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // 200 でも candidates 空があり得る: 利用可能モデルへ再試行
-    if (isGeminiEmptyResponseError(err)) {
-      try {
-        const models = await listGeminiModels(apiKey, geminiApiVersionFromEnv());
-        // まず、要求モデルが利用可能一覧に無い場合は最適モデルへ
-        if (!models.includes(normalizedModel)) {
-          const chosen = pickPreferredGeminiModel(models);
-          if (chosen && chosen !== normalizedModel) {
-            return await callGenerateContentOnce(apiKey, chosen, prompt, maxOutputTokens, enableGoogleSearch);
-          }
-        }
-
-        // 要求モデルが存在していても「空応答」になることがあるため、別モデルへ切り替えて再試行する
-        const alternative = pickPreferredGeminiModelExcluding(models, normalizedModel);
-        if (alternative && alternative !== normalizedModel) {
-          return await callGenerateContentOnce(apiKey, alternative, prompt, maxOutputTokens, enableGoogleSearch);
-        }
-
-        // それでもダメなら、一覧の2番目以降を順に軽く試す（最大3つ）
-        const rest = models.filter((m) => m !== normalizedModel);
-        for (const m of rest.slice(0, 3)) {
-          try {
-            return await callGenerateContentOnce(apiKey, m, prompt, maxOutputTokens, enableGoogleSearch);
-          } catch {
-            // continue
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    throw err instanceof Error ? err : new Error(String(err));
-  }
+  // 失敗時のフォールバック（APIバージョン切替/モデル切替）は行わない。
+  return await callGenerateContentOnce(apiKey, normalizedModel, prompt, maxOutputTokens, enableGoogleSearch);
 }
 
 export function geminiModelFromEnv(envKey: string, fallback: string): string {

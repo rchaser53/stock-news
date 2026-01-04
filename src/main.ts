@@ -158,7 +158,7 @@ async function main(): Promise<void> {
   if (!apiKey) throw new Error('環境変数 GEMINI_API_KEY が設定されていません');
 
   const requestedVersion = geminiApiVersionFromEnv();
-  console.log(`Gemini API version: requested=${requestedVersion} (effective is handled internally)\n`);
+  console.log(`Gemini API version: ${requestedVersion}\n`);
 
   const config = await loadConfig('config.yaml');
   if (config.companies.length === 0) throw new Error('設定ファイルに会社が登録されていません');
