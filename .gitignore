@@ -29,3 +29,6 @@ dist/
 diffs/*
 .env
 eval/__pycache__/
+
+.venv
+eval_runs
