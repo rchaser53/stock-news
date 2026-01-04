@@ -212,6 +212,8 @@ npm run dev -- -auto-read
 
 ## ragas による自動評価（LLM出力のスコアリング）
 
+`eval/evaluate.py` の詳細な使い方は別ドキュメントにまとめています: [eval/README.md](eval/README.md)
+
 このプロジェクトは TypeScript(Node.js) でニュース取得/差分要約を行い、出力品質の評価には Python ライブラリの `ragas` を利用できます。
 
 ### 何が評価できるか
@@ -275,7 +277,14 @@ pip install -r eval/requirements.txt
 .venv/bin/python eval/evaluate.py --input eval_runs --task news_report
 ```
 
-結果は `eval_reports/ragas_YYYYMMDD_HHMMSS.csv` に保存され、平均スコアも標準出力に表示されます。
+結果はデフォルトで `eval_reports/ragas_YYYYMMDD_HHMMSS.md`（Markdown）に保存され、平均スコアも標準出力に表示されます。
+
+CSVやJSONLで出したい場合は `--out-format` を指定してください:
+
+```bash
+.venv/bin/python eval/evaluate.py --input eval_runs --task news_report --out-format csv
+.venv/bin/python eval/evaluate.py --input eval_runs --task news_report --out-format jsonl
+```
 
 ## 機能詳細
 
