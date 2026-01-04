@@ -12,3 +12,10 @@ export function envBool(name: string, fallback: boolean): boolean {
   if (['0', 'false', 'no', 'n', 'off'].includes(raw)) return false;
   return fallback;
 }
+
+export function envInt(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}

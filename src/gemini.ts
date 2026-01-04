@@ -1,4 +1,4 @@
-import { envBool, envString } from './env.js';
+import { envBool, envInt, envString } from './env.js';
 import { serialize, withRetry } from './retry.js';
 
 export type GeminiGenerateContentRequest = {
@@ -12,6 +12,8 @@ type GeminiGenerateContentResponse = {
   promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
   error?: { code?: number; message?: string; status?: string };
 };
+
+type GenerateOnceResult = { text: string; finishReason: string };
 
 let lastGeminiApiVersionUsed = '';
 
@@ -47,6 +49,17 @@ function truncateForError(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}...`;
 }
 
+function takeTail(s: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  return s.length <= maxChars ? s : s.slice(Math.max(0, s.length - maxChars));
+}
+
+function isMaxTokensFinishReason(finishReason: string): boolean {
+  const fr = (finishReason ?? '').trim().toUpperCase();
+  if (!fr) return false;
+  return fr === 'MAX_TOKENS' || fr === 'MAX_OUTPUT_TOKENS' || fr.includes('MAX_TOKENS');
+}
+
 export function geminiDefaultChatModel(): string {
   // rag-playground と同じ env 名を優先
   return envString('GEMINI_CHAT_MODEL', envString('GEMINI_MODEL', 'gemini-3-pro-preview'))!;
@@ -56,14 +69,14 @@ export function geminiDebugEnabled(): boolean {
   return envBool('GEMINI_DEBUG', false);
 }
 
-async function callGenerateContentOnceWithVersion(
+async function callGenerateContentOnceWithVersionDetailed(
   apiVersion: string,
   apiKey: string,
   model: string,
   prompt: string,
   maxOutputTokens: number,
   enableGoogleSearch: boolean
-): Promise<string> {
+): Promise<GenerateOnceResult> {
   const version = normalizeGeminiApiVersion(apiVersion);
   const normalizedModel = normalizeModelName(model);
   if (!apiKey.trim()) throw new Error('GEMINI_API_KEY が空です');
@@ -109,6 +122,7 @@ async function callGenerateContentOnceWithVersion(
 
   const candidates = parsed.candidates ?? [];
   const parts = candidates[0]?.content?.parts ?? [];
+  const finishReason = (candidates[0]?.finishReason ?? '').trim();
   if (candidates.length === 0 || parts.length === 0) {
     const br = parsed.promptFeedback?.blockReason?.trim() ?? '';
     const msg = parsed.promptFeedback?.blockReasonMessage?.trim() ?? '';
@@ -129,7 +143,43 @@ async function callGenerateContentOnceWithVersion(
   if (!text) throw new Error('テキスト応答が見つかりません');
 
   recordGeminiApiVersionUsed(version);
-  return text;
+  return { text, finishReason };
+}
+
+async function callGenerateContentOnceWithVersion(
+  apiVersion: string,
+  apiKey: string,
+  model: string,
+  prompt: string,
+  maxOutputTokens: number,
+  enableGoogleSearch: boolean
+): Promise<string> {
+  const r = await callGenerateContentOnceWithVersionDetailed(
+    apiVersion,
+    apiKey,
+    model,
+    prompt,
+    maxOutputTokens,
+    enableGoogleSearch
+  );
+  return r.text;
+}
+
+async function callGenerateContentOnceDetailed(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  maxOutputTokens: number,
+  enableGoogleSearch: boolean
+): Promise<GenerateOnceResult> {
+  return callGenerateContentOnceWithVersionDetailed(
+    geminiApiVersionFromEnv(),
+    apiKey,
+    model,
+    prompt,
+    maxOutputTokens,
+    enableGoogleSearch
+  );
 }
 
 async function callGenerateContentOnce(
@@ -151,8 +201,56 @@ export async function callGeminiGenerateContent(
 ): Promise<string> {
   const normalizedModel = normalizeModelName(model);
 
+  const autoContinue = envBool('GEMINI_AUTO_CONTINUE', true);
+  const maxContinuations = envInt('GEMINI_MAX_CONTINUATIONS', 2);
+  const continuationContextChars = envInt('GEMINI_CONTINUATION_CONTEXT_CHARS', 6000);
+
+  let combined = '';
+  let promptForCall = prompt;
+  let searchForCall = enableGoogleSearch;
+
+  for (let i = 0; i <= maxContinuations; i += 1) {
+    const { text, finishReason } = await callGenerateContentOnceDetailed(
+      apiKey,
+      normalizedModel,
+      promptForCall,
+      maxOutputTokens,
+      searchForCall
+    );
+
+    if (!combined) {
+      combined = text;
+    } else {
+      const sep = combined.endsWith('\n') || text.startsWith('\n') ? '' : '\n';
+      combined = `${combined}${sep}${text}`;
+    }
+
+    if (geminiDebugEnabled()) {
+      console.log(
+        `[gemini] finishReason=${finishReason || '(none)'} chars=${text.length} combinedChars=${combined.length} cont=${i}/${maxContinuations}`
+      );
+    }
+
+    if (!autoContinue) return combined;
+
+    if (isMaxTokensFinishReason(finishReason) && i < maxContinuations) {
+      const tail = takeTail(combined, continuationContextChars);
+      promptForCall =
+        `あなたの前回の回答はトークン上限で途中終了しました。\n` +
+        `以下の「元の依頼」と「これまでの回答（末尾）」を踏まえて、続きを出力してください。\n` +
+        `重複は避け、続きの部分だけを同じ形式で書いてください。\n\n` +
+        `## 元の依頼\n${prompt}\n\n` +
+        `## これまでの回答（末尾）\n${tail}\n`;
+      // 続き生成では検索ツールは不要なことが多いので無効化
+      searchForCall = false;
+      continue;
+    }
+
+    return combined;
+  }
+
   // 失敗時のフォールバック（APIバージョン切替/モデル切替）は行わない。
-  return await callGenerateContentOnce(apiKey, normalizedModel, prompt, maxOutputTokens, enableGoogleSearch);
+  return combined;
 }
 
 export function geminiModelFromEnv(envKey: string, fallback: string): string {
@@ -180,13 +278,14 @@ export async function getStockNews(apiKey: string, company: { name: string; tick
 
   const newsModel = geminiModelFromEnv('GEMINI_MODEL_NEWS', geminiDefaultChatModel());
   const enableSearch = envBool('GEMINI_ENABLE_GOOGLE_SEARCH', true);
+  const maxTokens = envInt('GEMINI_NEWS_MAX_OUTPUT_TOKENS', 2500);
 
   try {
-    return await callGeminiGenerateContent(apiKey, newsModel, prompt, 1500, enableSearch);
+    return await callGeminiGenerateContent(apiKey, newsModel, prompt, maxTokens, enableSearch);
   } catch (err) {
     // googleSearch tool が利用できない環境もあるため、フォールバックでツール無し再試行
     if (enableSearch) {
-      return await callGeminiGenerateContent(apiKey, newsModel, prompt, 1500, false);
+      return await callGeminiGenerateContent(apiKey, newsModel, prompt, maxTokens, false);
     }
     throw err;
   }
