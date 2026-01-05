@@ -262,10 +262,12 @@ export async function getStockNews(apiKey: string, company: { name: string; tick
     ? `\n\n**重要**: 必ず以下のIRサイトも確認してください:\n${company.ir_url}`
     : '';
 
-  const prompt = `${company.name}（証券コード: ${company.ticker}）について、以下の手順で情報を収集してください:\n\n` +
+  const prompt = `対象企業（会社名: ${company.name}, 証券コード: ${company.ticker}）について、以下の手順で情報を収集してください。\n` +
     `1. IRサイト（${company.ir_url ?? ''}）から最新のIR情報（決算、開示資料、プレスリリース）を確認\n` +
     `2. Web検索で直近30日以内の株価関連ニュースを調査\n\n` +
     `## 出力形式\n` +
+    `- **注意**: 出力本文には会社名や証券コードを書かないでください（ファイル名に含まれるため）。\n` +
+    `- 余計な導入文は不要です。以下の見出しから開始してください。\n\n` +
     `### IRサイトからの最新情報\n` +
     `- 日付と内容を箇条書き（最大3件）\n\n` +
     `### Web検索からのニュース\n` +

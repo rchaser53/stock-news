@@ -18,6 +18,28 @@ import {
 import { speakWithVoicevox } from './voicevox.js';
 import { loadConfig } from './yamlConfig.js';
 
+function sanitizeNewsForOutput(news: string, company: { name: string; ticker: string }): string {
+  let text = news;
+
+  // ありがちな定型表現だけ安全に除去（ファイル名に含まれるため本文には不要）
+  const name = company.name;
+  const ticker = company.ticker;
+
+  text = text
+    .replaceAll(`会社名: ${name}`, '')
+    .replaceAll(`証券コード: ${ticker}`, '')
+    .replaceAll(`${name}（証券コード: ${ticker}）`, 'この銘柄')
+    .replaceAll(`（証券コード: ${ticker}）`, '');
+
+  // 先頭の余分な空行を整理
+  text = text.replace(/^\s+/, '');
+
+  // 空行が連続しすぎる場合を軽く圧縮
+  text = text.replace(/\n{4,}/g, '\n\n\n');
+
+  return text;
+}
+
 async function readAloudFiles(dirPath: string): Promise<void> {
   // existence
   await fs.stat(dirPath);
@@ -207,7 +229,8 @@ async function main(): Promise<void> {
       const filePath = path.join(outputDir, filename);
 
       const jpNow = now.toISOString().replace('T', ' ').slice(0, 19);
-      const content = `会社名: ${company.name}\n証券コード: ${company.ticker}\nIRサイト: ${company.ir_url ?? ''}\n取得日時: ${jpNow}\n\n${news}\n`;
+      const sanitizedNews = sanitizeNewsForOutput(news, company);
+      const content = `IRサイト: ${company.ir_url ?? ''}\n取得日時: ${jpNow}\n\n${sanitizedNews}\n`;
       await fs.writeFile(filePath, content, 'utf-8');
 
       console.log(`  ✓ 完了: ${filePath}`);
