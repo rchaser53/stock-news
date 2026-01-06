@@ -69,6 +69,15 @@ export function geminiDebugEnabled(): boolean {
   return envBool('GEMINI_DEBUG', false);
 }
 
+function isEmptyGeminiResponseError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('Gemini応答が空です') ||
+    msg.includes('Gemini API応答が空です') ||
+    msg.includes('テキスト応答が見つかりません')
+  );
+}
+
 async function callGenerateContentOnceWithVersionDetailed(
   apiVersion: string,
   apiKey: string,
@@ -285,10 +294,47 @@ export async function getStockNews(apiKey: string, company: { name: string; tick
   try {
     return await callGeminiGenerateContent(apiKey, newsModel, prompt, maxTokens, enableSearch);
   } catch (err) {
-    // googleSearch tool が利用できない環境もあるため、フォールバックでツール無し再試行
+    // googleSearch tool が利用できない環境もあるため、まずツール無しで再試行
     if (enableSearch) {
-      return await callGeminiGenerateContent(apiKey, newsModel, prompt, maxTokens, false);
+      try {
+        return await callGeminiGenerateContent(apiKey, newsModel, prompt, maxTokens, false);
+      } catch (err2) {
+        // fall through
+        err = err2;
+      }
     }
+
+    // まれに status=200 でも candidates/parts が空になることがあるため、別経路で再試行して回避
+    if (isEmptyGeminiResponseError(err)) {
+      const retryPrompt =
+        prompt +
+        `\n\n# 追加指示\n` +
+        `- 出力は必ずテキストで返してください。\n` +
+        `- 情報が取得できない場合でも、各セクションに「該当情報なし」と明記して空にしないでください。\n`;
+
+      try {
+        return await callGeminiGenerateContent(apiKey, newsModel, retryPrompt, Math.min(maxTokens, 1800), false);
+      } catch {
+        // v1 での単発生成も試す（v1betaで稀に空返答になる環境向け）
+        try {
+          const r = await callGenerateContentOnceWithVersion('v1', apiKey, newsModel, retryPrompt, Math.min(maxTokens, 1800), false);
+          if (r.trim()) return r;
+        } catch {
+          // ignore
+        }
+      }
+
+      // 最終フォールバック（処理を止めない）
+      return (
+        `### IRサイトからの最新情報\n` +
+        `- 該当情報なし（Geminiの応答が空でした）\n\n` +
+        `### Web検索からのニュース\n` +
+        `1. 該当ニュースなし\n` +
+        `   - 要約: 該当情報なし\n` +
+        `   - 出典: \n`
+      );
+    }
+
     throw err;
   }
 }
